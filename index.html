@@ -65,6 +65,17 @@
   .cell .note{font-size:11px;color:var(--dim);margin-top:5px}
   .up{color:var(--up)} .down{color:var(--down)} .flat{color:var(--sub)}
 
+  /* 市场参考价 */
+  .mkt{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;
+    margin-top:14px;padding-top:13px;border-top:1px solid #1B212B}
+  .mkt .l{font-size:11.5px;color:var(--sub);display:flex;align-items:center;gap:6px;margin-bottom:6px}
+  .mkt .v{font-size:17px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.2px}
+  .mkt .v small{font-size:11px;color:var(--dim);font-weight:400;margin-left:3px}
+  .mkt .r{font-size:11px;color:var(--dim);text-align:right;line-height:1.7}
+  .pill{font-size:10px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
+  .pill.ok{color:#4CC38A;border-color:rgba(76,195,138,.42)}
+  .pill.bad{color:#C68A5E;border-color:rgba(198,138,94,.42)}
+
   /* 列表 */
   .card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
   .card-t{font-size:13px;color:var(--sub);letter-spacing:.3px}
@@ -138,6 +149,14 @@
     <div class="edit-price">
       <input id="pxInput" type="number" step="0.01" inputmode="decimal" placeholder="工行 App 当前积存价">
       <button class="btn-gold" id="pxSet">更新</button>
+    </div>
+
+    <div class="mkt">
+      <div>
+        <div class="l">市场参考 <span class="pill" id="refTag">连接中</span></div>
+        <div class="v" id="refPx">—<small>元/克</small></div>
+      </div>
+      <div class="r" id="refNote">国际金价折算<br>非工行挂价</div>
     </div>
   </div>
 
@@ -278,6 +297,7 @@
 
   function render() {
     var s = calc(), px = db.price;
+    renderRef();
 
     $('px').innerHTML = (px ? fmt(px, 2) : '—') + '<small>元/克</small>';
     $('pxMeta').textContent = px
@@ -344,7 +364,68 @@
     clearTimeout(t._h); t._h = setTimeout(function () { t.classList.remove('on'); }, 1800);
   }
 
-  /* 现价 */
+  /* ---------- 市场参考价：国际金价实时折算 ---------- */
+  var OZ = 31.1035, PREM = 1.015, ICBC_DEV = -12.85;
+  var FX = 6.69, FX_AT = 0;
+  var refPx = null, refAt = 0, refTimer = null;
+
+  function refConv(usd, fx) { return usd * fx / OZ * PREM + ICBC_DEV; }
+
+  function fetchFX() {
+    return fetch('https://open.er-api.com/v6/latest/USD', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var v = d && d.rates && Number(d.rates.CNY);
+        if (v > 0) { FX = v; FX_AT = Date.now(); }
+      }).catch(function () {});
+  }
+
+  function fetchRef() {
+    return fetch('https://api.gold-api.com/price/XAU', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var p = Number(d && d.price);
+        if (!p || isNaN(p)) throw new Error('bad payload');
+        refPx = refConv(p, FX); refAt = Date.now();
+        renderRef();
+      })
+      .catch(function () {
+        if (!refPx) {
+          $('refTag').className = 'pill bad';
+          $('refTag').textContent = '离线';
+          $('refNote').innerHTML = '连不上数据源<br>手动填价照样能用';
+        }
+      });
+  }
+
+  function renderRef() {
+    if (!refPx) return;
+    $('refTag').className = 'pill ok';
+    $('refTag').textContent = '实时';
+    $('refPx').innerHTML = fmt(refPx, 2) + '<small>元/克</small>';
+    if (db.price) {
+      var gap = refPx - db.price, gp = gap / db.price * 100;
+      var txt = '比你填的' + (gap >= 0 ? '高 ' : '低 ') + fmt(Math.abs(gap), 2) +
+        '（' + sgn(gp, 2) + '%）';
+      if (Math.abs(gp) > 0.8) {
+        $('refTag').className = 'pill bad';
+        $('refTag').textContent = '手动价偏了';
+        txt += '<br>建议点上方更新一下';
+      }
+      $('refNote').innerHTML = txt + '<br>折算于 ' + hm(refAt);
+    } else {
+      $('refNote').innerHTML = '国际金价折算 · ' + hm(refAt) + '<br>非工行实时挂价';
+    }
+  }
+
+  function startRef() {
+    fetchRef();
+    if (refTimer) clearInterval(refTimer);
+    refTimer = setInterval(function () { if (!document.hidden) fetchRef(); }, 30000);
+    setInterval(function () { if (!document.hidden) fetchFX(); }, 3600000);
+  }
+
+  /* 现价（手动） */
   $('pxSet').addEventListener('click', function () {
     var v = parseFloat($('pxInput').value);
     if (!v || isNaN(v) || v <= 0) { toast('价格填得不对'); return; }
@@ -419,6 +500,7 @@
   /* 启动 */
   load();
   render();
+  fetchFX().then(startRef, startRef);
   $('px').addEventListener('click', function () {
     if (db.price) { $('pxInput').value = db.price; $('pxInput').focus(); }
   });
