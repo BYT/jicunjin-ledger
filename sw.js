@@ -1,4 +1,4 @@
-const CACHE = 'gm-ledger-v2';
+const CACHE = 'gm-ledger-v3';
 const FILES = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 
 self.addEventListener('install', e => {
