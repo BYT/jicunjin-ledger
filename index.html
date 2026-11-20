@@ -75,6 +75,11 @@
   .pill{font-size:10px;padding:2px 7px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
   .pill.ok{color:#4CC38A;border-color:rgba(76,195,138,.42)}
   .pill.bad{color:#C68A5E;border-color:rgba(198,138,94,.42)}
+  .apiline{display:flex;align-items:center;gap:10px;margin-top:11px;padding-top:10px;border-top:1px solid #1B212B}
+  .apiline button{background:transparent;border:1px solid var(--line);color:var(--sub);
+    font-size:11px;font-weight:500;padding:5px 10px;border-radius:9px}
+  .apiline .st{font-size:11px;color:var(--dim);line-height:1.5;flex:1}
+  .apiline .st b{color:var(--sub);font-weight:600}
 
   /* 列表 */
   .card-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -157,6 +162,11 @@
         <div class="v" id="refPx">—<small>元/克</small></div>
       </div>
       <div class="r" id="refNote">国际金价折算<br>非工行挂价</div>
+    </div>
+
+    <div class="apiline">
+      <button id="apiBtn">接口</button>
+      <div class="st" id="apiState">未接工行接口 · 上面是折算参考价</div>
     </div>
   </div>
 
@@ -241,6 +251,25 @@
   <div class="saveline">
     <button class="btn-ghost" id="btnCancel">取消</button>
     <button class="btn-gold" id="btnSave">保存</button>
+  </div>
+</div>
+
+<div class="sheet-bg" id="apiBg"></div>
+<div class="sheet" id="apiSheet">
+  <div class="grab"></div>
+  <div style="font-size:15px;font-weight:650;margin-bottom:5px">工行积存金接口</div>
+  <div style="font-size:11.5px;color:var(--dim);line-height:1.75;margin-bottom:14px">
+    填电脑上那个接口地址，账本就会每 30 秒直读工行积存价。<br>
+    地址每次重启会变，变了回来重填一次。
+  </div>
+  <div class="field">
+    <label>接口地址</label>
+    <input id="apiInput" type="url" inputmode="url" autocapitalize="off" autocorrect="off" placeholder="https://xxx.trycloudflare.com">
+    <div class="hintline">只填到域名，不要带 /icbc</div>
+  </div>
+  <div class="saveline">
+    <button class="btn-ghost" id="apiClear">断开</button>
+    <button class="btn-gold" id="apiSave">测试并保存</button>
   </div>
 </div>
 
@@ -367,7 +396,14 @@
   /* ---------- 市场参考价：国际金价实时折算 ---------- */
   var OZ = 31.1035, PREM = 1.015, ICBC_DEV = -12.85;
   var FX = 6.69, FX_AT = 0;
-  var refPx = null, refAt = 0, refTimer = null;
+  var refPx = null, refAt = 0, refTimer = null, refSrc = 'calc', refStale = false, icbcTime = '';
+  var AK = 'gm_api_v1';
+  var api = { url: '' };
+
+  function loadApi() {
+    try { var o = JSON.parse(localStorage.getItem(AK) || 'null'); if (o && o.url) api.url = o.url; } catch (e) {}
+  }
+  function saveApi() { try { localStorage.setItem(AK, JSON.stringify(api)); } catch (e) {} }
 
   function refConv(usd, fx) { return usd * fx / OZ * PREM + ICBC_DEV; }
 
@@ -380,50 +416,126 @@
       }).catch(function () {});
   }
 
-  function fetchRef() {
+  function fetchIcbc() {
+    var u = api.url.replace(/\/+$/, '') + '/icbc';
+    return fetch(u, { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || !d.px) throw new Error('no px');
+        refPx = Number(d.px);
+        refSrc = 'icbc';
+        refStale = !!d.stale;
+        icbcTime = d.icbc_time || '';
+        refAt = Date.now();
+        renderRef();
+      });
+  }
+
+  function fetchDerived() {
     return fetch('https://api.gold-api.com/price/XAU', { cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (d) {
         var p = Number(d && d.price);
         if (!p || isNaN(p)) throw new Error('bad payload');
-        refPx = refConv(p, FX); refAt = Date.now();
+        refPx = refConv(p, FX);
+        refSrc = 'calc';
+        refStale = false;
+        refAt = Date.now();
         renderRef();
-      })
-      .catch(function () {
-        if (!refPx) {
+      });
+  }
+
+  function tick() {
+    return (api.url ? fetchIcbc() : fetchDerived()).catch(function () {
+      // 接口挂了就退回折算，别让用户看不到数
+      return fetchDerived().catch(function () {
+        if (refPx) { refStale = true; renderRef(); }
+        else {
           $('refTag').className = 'pill bad';
           $('refTag').textContent = '离线';
           $('refNote').innerHTML = '连不上数据源<br>手动填价照样能用';
         }
       });
+    });
   }
 
   function renderRef() {
     if (!refPx) return;
-    $('refTag').className = 'pill ok';
-    $('refTag').textContent = '实时';
+    var isI = refSrc === 'icbc';
+    $('refTag').className = 'pill ' + (refStale ? 'bad' : 'ok');
+    $('refTag').textContent = refStale ? (isI ? '延迟' : '估算') : (isI ? '工行实盘' : '实时');
     $('refPx').innerHTML = fmt(refPx, 2) + '<small>元/克</small>';
+    var tail = isI
+      ? ('工行挂价 · ' + (icbcTime ? icbcTime.slice(11, 16) : hm(refAt)))
+      : ('折算于 ' + hm(refAt));
+
     if (db.price) {
       var gap = refPx - db.price, gp = gap / db.price * 100;
       var txt = '比你填的' + (gap >= 0 ? '高 ' : '低 ') + fmt(Math.abs(gap), 2) +
         '（' + sgn(gp, 2) + '%）';
-      if (Math.abs(gp) > 0.8) {
+      if (Math.abs(gp) > (isI ? 0.5 : 0.8)) {
         $('refTag').className = 'pill bad';
         $('refTag').textContent = '手动价偏了';
-        txt += '<br>建议点上方更新一下';
+        txt += '<br>建议点「更新」跟上';
       }
-      $('refNote').innerHTML = txt + '<br>折算于 ' + hm(refAt);
+      $('refNote').innerHTML = txt + '<br>' + tail;
     } else {
-      $('refNote').innerHTML = '国际金价折算 · ' + hm(refAt) + '<br>非工行实时挂价';
+      $('refNote').innerHTML = (isI ? '工行积存价' : '国际金价折算') + '<br>' + tail;
     }
+    updateApiLine();
+  }
+
+  function updateApiLine() {
+    $('apiState').innerHTML = api.url
+      ? '已接工行接口 · 上面是<b>实盘积存价</b>，每 30 秒刷新'
+      : '未接工行接口 · 上面是折算参考价';
   }
 
   function startRef() {
-    fetchRef();
+    tick();
     if (refTimer) clearInterval(refTimer);
-    refTimer = setInterval(function () { if (!document.hidden) fetchRef(); }, 30000);
+    refTimer = setInterval(function () { if (!document.hidden) tick(); }, 30000);
     setInterval(function () { if (!document.hidden) fetchFX(); }, 3600000);
   }
+
+  /* ---------- 接口设置 ---------- */
+  function openApi() {
+    $('apiInput').value = api.url;
+    $('apiSheet').classList.add('on');
+    $('apiBg').classList.add('on');
+  }
+  function closeApi() {
+    $('apiSheet').classList.remove('on');
+    $('apiBg').classList.remove('on');
+  }
+  $('apiBtn').addEventListener('click', openApi);
+  $('apiBg').addEventListener('click', closeApi);
+  $('apiClear').addEventListener('click', function () {
+    api.url = ''; saveApi(); closeApi(); updateApiLine();
+    toast('已断开，改回折算参考价');
+    tick();
+  });
+  $('apiSave').addEventListener('click', function () {
+    var v = ($('apiInput').value || '').trim().replace(/\/+$/, '');
+    if (!/^https:\/\//i.test(v)) { toast('要 https:// 开头的地址'); return; }
+    var btn = $('apiSave');
+    btn.disabled = true; btn.textContent = '测试中…';
+    fetch(v + '/icbc', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        btn.disabled = false; btn.textContent = '测试并保存';
+        if (!d || !d.px) throw new Error('no px');
+        api.url = v; saveApi(); closeApi();
+        refPx = Number(d.px); refSrc = 'icbc'; refStale = !!d.stale;
+        icbcTime = d.icbc_time || ''; refAt = Date.now();
+        renderRef();
+        toast('已接上工行实盘 ' + fmt(Number(d.px), 2) + ' 元/克');
+      })
+      .catch(function () {
+        btn.disabled = false; btn.textContent = '测试并保存';
+        toast('连不上，检查地址或电脑是否在跑');
+      });
+  });
 
   /* 现价（手动） */
   $('pxSet').addEventListener('click', function () {
@@ -499,7 +611,9 @@
 
   /* 启动 */
   load();
+  loadApi();
   render();
+  updateApiLine();
   fetchFX().then(startRef, startRef);
   $('px').addEventListener('click', function () {
     if (db.price) { $('pxInput').value = db.price; $('pxInput').focus(); }
