@@ -496,9 +496,29 @@
     if (refTimer) clearInterval(refTimer);
     refTimer = setInterval(function () { if (!document.hidden) tick(); }, 30000);
     setInterval(function () { if (!document.hidden) fetchFX(); }, 3600000);
+    setInterval(function () { if (!document.hidden) syncApi(); }, 600000);
   }
 
   /* ---------- 接口设置 ---------- */
+  var SYNC = 'api.txt';
+
+  function syncApi() {
+    return fetch(SYNC + '?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (t) {
+        var v = (t || '').trim();
+        if (!/^https:\/\/[a-z0-9.-]+$/i.test(v)) return false;
+        if (v !== api.url) {
+          api.url = v; saveApi();
+          tick();
+          toast('接口地址已自动同步');
+        }
+        updateApiLine();
+        return true;
+      })
+      .catch(function () { return false; });
+  }
+
   function openApi() {
     $('apiInput').value = api.url;
     $('apiSheet').classList.add('on');
@@ -613,8 +633,10 @@
   load();
   loadApi();
   render();
-  updateApiLine();
-  fetchFX().then(startRef, startRef);
+  syncApi().then(function () {
+    updateApiLine();
+    fetchFX().then(startRef, startRef);
+  });
   $('px').addEventListener('click', function () {
     if (db.price) { $('pxInput').value = db.price; $('pxInput').focus(); }
   });
